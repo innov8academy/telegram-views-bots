@@ -1,0 +1,47 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+
+# Data files
+data/*.json
+*.lock
+
+# Replit specific
+.replit.backup
+.breakpoints
+.cache/
+.upm/
+
+# Logs
+*.log
+
+# Deployment files (not needed in GitHub)
+replit_deployment.zip
+deploy_to_replit.py
+extract_on_replit.py
+viewsbot_replit_patch.txt
+viewsbot_replit_patch.py
+render.yaml
+Procfile 

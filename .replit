@@ -1,0 +1,18 @@
+run = "python viewsbot.py"
+language = "python3"
+entrypoint = "viewsbot.py"
+
+[nix]
+channel = "stable-22_11"
+
+[env]
+PYTHONPATH = "${PYTHONPATH}:${workspaceDir}"
+
+[packager]
+language = "python3"
+ignoredPackages = ["unit_tests"]
+
+[packager.features]
+enabledForHosting = true
+packageSearch = true
+guessImports = true 
