@@ -628,4 +628,27 @@ def get_payments_local():
     
     except Exception as e:
         logger.error(f"Error getting payments from local file: {e}")
-        return [] 
+        return []
+
+def test_connection():
+    """
+    Test if the database connection is working
+    """
+    if not USE_SUPABASE:
+        # Check if data directory exists
+        if not os.path.exists(DATA_DIR):
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to create data directory: {e}")
+                return False
+        return True
+    
+    try:
+        # Try to fetch a single row from the settings table
+        result = supabase.table(SETTINGS_TABLE).select("*").limit(1).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to connect to Supabase: {e}")
+        return False 
