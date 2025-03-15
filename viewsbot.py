@@ -2284,6 +2284,8 @@ def admin_back_to_manage_callback(call):
 
 # Initialize data and start bot
 if __name__ == '__main__':
+    # Start the web server
+    start_web_server()
     try:
         init_data()
         logger.info("Bot started")
