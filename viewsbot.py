@@ -21,16 +21,17 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "Telegram Views Bot is running!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# Start Flask in a separate thread
-flask_thread = threading.Thread(target=run_flask)
-flask_thread.daemon = True
-flask_thread.start()
+# Define the function that will be called to start the web server
+def start_web_server():
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
 # Set up logging globally
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
