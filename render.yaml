@@ -5,6 +5,8 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python viewsbot.py
     healthCheckPath: /health
+    healthCheckTimeout: 5
+    plan: free
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
@@ -21,5 +23,4 @@ services:
       - key: TELEGRAM_VIEWS_SERVICE_ID
         sync: false
       - key: PORT
-        value: 10000
-    plan: free 
+        value: 10000 
