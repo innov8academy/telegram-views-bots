@@ -35,7 +35,13 @@ def health():
     """
     Health check endpoint for Render.com
     """
-    return jsonify({"status": "ok", "message": "Bot is running"})
+    port = int(os.environ.get('PORT', 10000))
+    return jsonify({
+        "status": "ok", 
+        "message": "Bot is running",
+        "port": port,
+        "server_url": f"http://0.0.0.0:{port}"
+    })
 
 @app.route('/test')
 def test():
@@ -79,8 +85,10 @@ def run_flask():
     # Get port from environment variable (Render sets this)
     port = int(os.environ.get('PORT', 10000))
     print(f"Starting Flask server on port {port}")
+    print(f"Server will be available at http://0.0.0.0:{port}")
     sys.stdout.flush()
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # Use threaded=False to avoid conflicts with the bot's threading
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=False, use_reloader=False)
 
 # Define the function that will be called to start the web server
 def start_web_server():
