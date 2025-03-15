@@ -26,14 +26,25 @@ def create_lock_file():
         try:
             with open(lock_file, 'r') as f:
                 pid = int(f.read().strip())
-                # Check if process is still running
-                try:
-                    os.kill(pid, 0)
-                    logger.error(f"Another bot instance is already running (PID: {pid})")
-                    sys.exit(1)
-                except OSError:
-                    # Process is not running, we can create a new lock
-                    pass
+                # Check if process is still running - platform specific
+                if sys.platform == 'win32':
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    SYNCHRONIZE = 0x00100000
+                    process = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+                    if process != 0:
+                        kernel32.CloseHandle(process)
+                        logger.error(f"Another bot instance is already running (PID: {pid})")
+                        sys.exit(1)
+                else:
+                    # Unix-based systems
+                    try:
+                        os.kill(pid, 0)
+                        logger.error(f"Another bot instance is already running (PID: {pid})")
+                        sys.exit(1)
+                    except OSError:
+                        # Process is not running, we can create a new lock
+                        pass
         except (ValueError, IOError):
             pass
     
@@ -133,8 +144,15 @@ def load_data(file_path, default=None):
 
 def save_data(file_path, data):
     try:
+        # Ensure directory exists
+        directory = os.path.dirname(file_path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+            logger.info(f"Created directory: {directory}")
+            
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=2)
+        logger.info(f"Successfully saved data to {file_path}")
         return True
     except Exception as e:
         logger.error(f"Error saving to {file_path}: {e}")
@@ -370,6 +388,29 @@ def restore_main_menu_keyboard(chat_id, message=None):
     global logger, bot
     logger.info(f"Restoring main menu keyboard for chat {chat_id}")
     
+    try:
+        keyboard = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+        view_btn = types.KeyboardButton('👁 View')
+        account_btn = types.KeyboardButton('👤 My account')
+        buy_coins_btn = types.KeyboardButton('💳 Buy coins')
+        support_btn = types.KeyboardButton('🆘 Support')
+
+        keyboard.add(view_btn, account_btn)
+        keyboard.add(buy_coins_btn, support_btn)
+        
+        if message:
+            bot.send_message(chat_id, message, reply_markup=keyboard)
+        else:
+            bot.send_message(chat_id, "Main menu:", reply_markup=keyboard)
+        logger.info(f"Main menu keyboard restored for chat {chat_id}")
+    except Exception as e:
+        logger.error(f"Error restoring main menu keyboard: {e}")
+        # Try a simpler approach as fallback
+        try:
+            bot.send_message(chat_id, "Please use /menu to return to the main menu.")
+        except:
+            pass
+
 # API functions
 def submit_order(post_link, quantity, runs=None, interval=None):
     """Submit an order to the API for Telegram views with optional drip feed parameters"""
@@ -529,33 +570,32 @@ def restore_main_menu_keyboard(chat_id, message=None):
     logger.info(f"Restoring main menu keyboard for chat {chat_id}")
     
     try:
-        # Create the main menu keyboard
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.row("👁 View", "👤 My account")
-        markup.row("💳 Buy coins", "❓ Support")
+        keyboard = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+        view_btn = types.KeyboardButton('👁 View')
+        account_btn = types.KeyboardButton('👤 My account')
+        buy_coins_btn = types.KeyboardButton('💳 Buy coins')
+        support_btn = types.KeyboardButton('🆘 Support')
+
+        keyboard.add(view_btn, account_btn)
+        keyboard.add(buy_coins_btn, support_btn)
         
-        # Send message with keyboard
         if message:
-            bot.send_message(chat_id, message, reply_markup=markup)
+            bot.send_message(chat_id, message, reply_markup=keyboard)
         else:
-            bot.send_message(chat_id, "Main Menu:", reply_markup=markup)
-            
-        logger.info(f"Successfully restored main menu keyboard for chat {chat_id}")
+            bot.send_message(chat_id, "Main menu:", reply_markup=keyboard)
+        logger.info(f"Main menu keyboard restored for chat {chat_id}")
     except Exception as e:
         logger.error(f"Error restoring main menu keyboard: {e}")
-        # Try to send a simpler message if keyboard restoration fails
+        # Try a simpler approach as fallback
         try:
-            if message:
-                bot.send_message(chat_id, message)
-            else:
-                bot.send_message(chat_id, "Main Menu:")
-        except Exception as e2:
-            logger.error(f"Error sending fallback message: {e2}")
+            bot.send_message(chat_id, "Please use /menu to return to the main menu.")
+        except:
+            pass
 
 # Start command handler
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    global logger, bot, get_user, update_user, show_main_menu, ADMIN_IDS, settings_data, SETTINGS_FILE, save_data
+    global logger, bot, get_user, update_user, restore_main_menu_keyboard, ADMIN_IDS, settings_data, SETTINGS_FILE, save_data
     logger.info(f"Received /start command from user {message.from_user.id}")
 
     user_id = message.from_user.id
@@ -584,36 +624,16 @@ def start_command(message):
     try:
         bot.send_message(message.chat.id, welcome_msg)
         logger.info("Welcome message sent successfully")
-        show_main_menu(message.chat.id)
+        restore_main_menu_keyboard(message.chat.id)
     except Exception as e:
         logger.error(f"Error sending welcome message: {e}")
 
 # Main menu function
-def show_main_menu(chat_id):
-    global logger, bot, types
-    logger.info(f"Showing main menu to chat_id {chat_id}")
-    try:
-        keyboard = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-
-        view_btn = types.KeyboardButton('👁 View')
-        account_btn = types.KeyboardButton('👤 My account')
-        buy_coins_btn = types.KeyboardButton('💳 Buy coins')
-        support_btn = types.KeyboardButton('🆘 Support')
-
-        keyboard.add(view_btn, account_btn)
-        keyboard.add(buy_coins_btn, support_btn)
-
-        bot.send_message(chat_id, "Main Menu:", reply_markup=keyboard)
-        logger.info(f"Main menu sent to chat_id {chat_id}")
-    except Exception as e:
-        logger.error(f"Error showing main menu: {e}")
-
-# Menu command handler
 @bot.message_handler(commands=['menu'])
 def menu_command(message):
-    global logger, show_main_menu
+    global logger, restore_main_menu_keyboard
     logger.info(f"Received /menu command from user {message.from_user.id}")
-    show_main_menu(message.chat.id)
+    restore_main_menu_keyboard(message.chat.id)
 
 # My Account handler
 @bot.message_handler(func=lambda message: message.text == '👤 My account')
@@ -1413,9 +1433,35 @@ def support_handler(message):
                 if key.startswith('temp_'):
                     del users_data[user_id][key]
 
+        # Reload settings to ensure we have the latest support username
+        settings_file = os.path.join('data', 'settings.json')
+        if os.path.exists(settings_file):
+            with open(settings_file, 'r') as f:
+                try:
+                    loaded_settings = json.load(f)
+                    if 'support_username' in loaded_settings:
+                        settings_data['support_username'] = loaded_settings['support_username']
+                except json.JSONDecodeError:
+                    logger.error(f"Error decoding settings.json")
+
         support_username = settings_data.get("support_username", "SupportUser")
         # Remove @ if present in the username
         support_username = support_username.replace('@', '')
+        
+        # If support username is still the default, show a message to set it up
+        if support_username == "SupportUser" and message.from_user.id in ADMIN_IDS:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("⚙️ Set Support Username", callback_data="admin_change_support"))
+            
+            bot.send_message(
+                message.chat.id,
+                "⚠️ *Support Username Not Configured*\n\n"
+                "You need to set up a support username in the admin panel.\n"
+                "Click the button below to configure it now.",
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
+            return
         
         support_message = (
             f"🆘 *Support*\n\n"
@@ -1437,7 +1483,12 @@ def support_handler(message):
         logger.info(f"Support information sent to user {message.from_user.id}")
     except Exception as e:
         logger.error(f"Error handling support request: {e}")
-        bot.send_message(message.chat.id, "Sorry, there was an error processing your support request.")
+        bot.send_message(
+            message.chat.id, 
+            "Sorry, there was an error processing your support request. Please try again later."
+        )
+        # Show main menu as fallback
+        restore_main_menu_keyboard(message.chat.id)
 
 # Admin command handler
 @bot.message_handler(commands=['admin'])
@@ -1460,10 +1511,13 @@ def admin_command(message):
 
 # Function to show admin panel
 def show_admin_panel(chat_id):
-    global logger, bot, types
+    global logger, bot, types, restore_main_menu_keyboard
     logger.info(f"Showing admin panel to chat_id {chat_id}")
     
     try:
+        # Ensure the main menu keyboard is restored
+        restore_main_menu_keyboard(chat_id)
+        
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
             types.InlineKeyboardButton("💰 Add Coins to User", callback_data="admin_add_coins"),
@@ -1484,6 +1538,11 @@ def show_admin_panel(chat_id):
     except Exception as e:
         logger.error(f"Error showing admin panel buttons: {e}")
         bot.send_message(chat_id, f"Error showing admin panel: {str(e)}")
+        # Try to restore main menu as fallback
+        try:
+            restore_main_menu_keyboard(chat_id)
+        except:
+            pass
 
 # Admin callback handler
 @bot.callback_query_handler(func=lambda call: (call.data.startswith('admin_') and not call.data == "admin_back_to_panel") or call.data == "back_to_menu")
@@ -1501,12 +1560,25 @@ def admin_callback_handler(call):
         # Handle different admin actions
         if call.data == "admin_add_coins":
             bot.answer_callback_query(call.id)
+            
+            # Add a reply keyboard with cancel button
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            markup.add(types.KeyboardButton('❌ Cancel'))
+            
             bot.edit_message_text(
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
                 text="💰 *Add Coins to User*\n\nEnter user ID to add coins to:",
                 parse_mode="Markdown"
             )
+            
+            # Send a new message with the reply keyboard
+            bot.send_message(
+                chat_id=call.message.chat.id,
+                text="Enter user ID or press Cancel to return to admin panel:",
+                reply_markup=markup
+            )
+            
             bot.register_next_step_handler(call.message, admin_get_user_id_for_coins)
             
         elif call.data == "admin_change_payment_username":
@@ -1619,8 +1691,10 @@ def admin_get_user_id_for_coins(message):
         try:
             int(user_id)  # Check if it's a valid integer
         except ValueError:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="admin_back_to_panel"))
+            # Add a reply keyboard with cancel button
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            markup.add(types.KeyboardButton('❌ Cancel'))
+            
             bot.send_message(
                 message.chat.id, 
                 "⚠️ Please enter a valid user ID (numbers only).",
@@ -1649,9 +1723,10 @@ def admin_get_user_id_for_coins(message):
             users_data[admin_id] = {}
         users_data[admin_id]['admin_temp_user_id'] = user_id
         
-        # Ask for coin amount with cancel button
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="admin_back_to_panel"))
+        # Ask for coin amount with cancel button in reply keyboard
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add(types.KeyboardButton('❌ Cancel'))
+        
         bot.send_message(
             message.chat.id, 
             f"💰 Enter amount of coins to add to user {user_id}:",
@@ -1689,8 +1764,10 @@ def admin_add_coins_to_user(message):
         try:
             coins = int(message.text.strip())
             if coins <= 0:
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="admin_back_to_panel"))
+                # Add a reply keyboard with cancel button
+                markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+                markup.add(types.KeyboardButton('❌ Cancel'))
+                
                 bot.send_message(
                     message.chat.id, 
                     "⚠️ Please enter a positive number of coins.",
@@ -1699,8 +1776,10 @@ def admin_add_coins_to_user(message):
                 bot.register_next_step_handler(message, admin_add_coins_to_user)
                 return
         except ValueError:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="admin_back_to_panel"))
+            # Add a reply keyboard with cancel button
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            markup.add(types.KeyboardButton('❌ Cancel'))
+            
             bot.send_message(
                 message.chat.id, 
                 "⚠️ Please enter a valid number.",
@@ -1849,13 +1928,17 @@ def admin_change_support_username(message):
 
         new_username = message.text.strip()
         
+        # Remove @ if present
+        if new_username.startswith('@'):
+            new_username = new_username[1:]
+        
         # Validate username (basic check)
-        if not new_username or ' ' in new_username or '@' in new_username:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="admin_back_to_panel"))
+        if not new_username or ' ' in new_username:
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            markup.add('❌ Cancel')
             bot.send_message(
                 message.chat.id, 
-                "⚠️ Invalid username format. Please enter a valid Telegram username without @ or spaces.",
+                "⚠️ Invalid username format. Please enter a valid Telegram username without spaces.",
                 reply_markup=markup
             )
             bot.register_next_step_handler(message, admin_change_support_username)
@@ -1864,6 +1947,11 @@ def admin_change_support_username(message):
         # Update settings
         old_username = settings_data.get('support_username', 'SupportUser')
         settings_data['support_username'] = new_username
+        
+        # Ensure the settings directory exists
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        
+        # Save settings
         save_result = save_data(SETTINGS_FILE, settings_data)
         
         if save_result:
@@ -1874,11 +1962,13 @@ def admin_change_support_username(message):
                 f"Old username: @{old_username}\n"
                 f"New username: @{new_username}"
             )
+            logger.info(f"Support username updated from {old_username} to {new_username}")
         else:
             bot.send_message(
                 message.chat.id,
                 "⚠️ Error saving settings. Please try again."
             )
+            logger.error(f"Failed to save settings when updating support username")
         
         # Return to admin panel
         show_admin_panel(message.chat.id)
@@ -2129,7 +2219,7 @@ def admin_remove_admin_callback(call):
 # Back to admin panel callback handler
 @bot.callback_query_handler(func=lambda call: call.data == "admin_back_to_panel")
 def admin_back_to_panel_callback(call):
-    global logger, bot, ADMIN_IDS
+    global logger, bot, ADMIN_IDS, restore_main_menu_keyboard
     logger.info(f"Admin {call.from_user.id} returning to admin panel")
     
     try:
@@ -2144,12 +2234,16 @@ def admin_back_to_panel_callback(call):
         # Delete the current message
         bot.delete_message(call.message.chat.id, call.message.message_id)
         
+        # Restore the main menu keyboard in case it was replaced by a custom keyboard
+        restore_main_menu_keyboard(call.message.chat.id)
+        
         # Show the admin panel
         show_admin_panel(call.message.chat.id)
         
     except Exception as e:
         logger.error(f"Error in back to panel callback: {e}")
         bot.answer_callback_query(call.id, "An error occurred")
+        restore_main_menu_keyboard(call.message.chat.id)
         show_admin_panel(call.message.chat.id)
 
 # Back to manage admins callback handler
@@ -2282,41 +2376,33 @@ def cancel_command(message):
         user_id = str(message.from_user.id)
         
         # Get user's pending orders
-        pending_orders = [order for order in orders_data if order["user_id"] == user_id and order["status"] == "pending"]
+        user_orders = [order for order in orders_data if order["user_id"] == user_id and order["status"] == "pending"]
         
-        if not pending_orders:
+        if not user_orders:
             bot.send_message(
                 message.chat.id,
-                "📋 You don't have any pending orders to cancel.\n\n"
-                "Use '📋 My Orders' to view all your orders."
+                "❌ You don't have any pending orders to cancel.\n\n"
+                "Use '/menu' to return to the main menu."
             )
             return
             
         # Create inline keyboard with cancel buttons
         markup = types.InlineKeyboardMarkup(row_width=1)
-        for order in pending_orders:
+        
+        for order in user_orders:
             markup.add(types.InlineKeyboardButton(
                 f"Cancel Order {order['id']} ({order['quantity']:,} views)",
                 callback_data=f"cancel_order_{order['id']}"
             ))
+            
         markup.add(types.InlineKeyboardButton("❌ Close", callback_data="close_cancel_menu"))
-        
-        # Create message with pending orders
-        orders_message = "📋 *Your Pending Orders*\n\n"
-        for order in pending_orders:
-            orders_message += (
-                f"Order ID: `{order['id']}`\n"
-                f"Views: {order['quantity']:,}\n"
-                f"Created: {order['created_at']}\n\n"
-            )
-        orders_message += "Click the button below to cancel an order."
         
         bot.send_message(
             message.chat.id,
-            orders_message,
-            reply_markup=markup,
-            parse_mode="Markdown"
+            "Select an order to cancel:",
+            reply_markup=markup
         )
+        logger.info(f"Sent cancel options to user {message.from_user.id}")
         
     except Exception as e:
         logger.error(f"Error handling cancel command: {e}")
@@ -2352,126 +2438,72 @@ def cancel_order_callback(call):
             bot.answer_callback_query(call.id, "❌ You can only cancel your own orders.")
             return
             
-        # Check if order can be cancelled
-        if order["status"] not in ["pending", "processing"]:
-            logger.info(f"Order {order_id} cannot be cancelled. Current status: {order['status']}")
-            bot.answer_callback_query(call.id, f"❌ Order cannot be cancelled. Current status: {order['status']}")
+        # Check if order is in a cancellable state
+        if order["status"] != "pending":
+            logger.warning(f"User {call.from_user.id} attempted to cancel order {order_id} with status {order['status']}")
+            bot.answer_callback_query(call.id, f"❌ Only pending orders can be cancelled. This order is {order['status']}.")
             return
             
-        # Cancel the timer if it exists
+        # Cancel the order
+        order["status"] = "cancelled"
+        
+        # Refund coins to user
+        user_id = str(call.from_user.id)
+        user = get_user(user_id)
+        user["coins"] = user.get("coins", 0) + order.get("price", 0)
+        update_user(user_id, user)
+        
+        # Save updated orders
+        save_data(ORDERS_FILE, orders_data)
+        
+        # Cancel any scheduled timers for this order
         if order_id in order_timers:
             order_timers[order_id].cancel()
             del order_timers[order_id]
             logger.info(f"Cancelled timer for order {order_id}")
-            
-        # Update order status to cancelled with timestamp
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        for i, o in enumerate(orders_data):
-            if o["id"] == order_id:
-                orders_data[i]["status"] = "cancelled"
-                orders_data[i]["cancelled_at"] = current_time
-                orders_data[i]["cancelled_by"] = str(call.from_user.id)
-                # If order was processing, add error message
-                if o["status"] == "processing":
-                    orders_data[i]["error"] = "Order cancelled by user"
-                break
-                
-        # Save updated orders data
-        save_data(ORDERS_FILE, orders_data)
         
-        # Refund coins to user
-        user = get_user(call.from_user.id)
-        user["coins"] += order["price"]
-        update_user(call.from_user.id, user)
-        
-        # Answer the callback
-        bot.answer_callback_query(call.id, f"✅ Order {order_id} cancelled and {order['price']:,} coins refunded")
-        
-        # Update the message
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text=f"✅ Order {order_id} has been cancelled.\n💰 {order['price']:,} coins have been refunded to your account.\n\nUse '📋 My Orders' to view all your orders.",
+        # Update user's order history
+        bot.send_message(
+            call.message.chat.id,
+            text=f"✅ Order {order_id} has been cancelled.\n💰 {order['price']:,} coins have been refunded to your account.\n\nUse '/cancel' to view all your orders.",
             parse_mode="Markdown"
         )
-        
-        logger.info(f"Order {order_id} cancelled by user {call.from_user.id}")
+        logger.info(f"Order {order_id} cancelled successfully")
         
     except Exception as e:
         logger.error(f"Error handling cancel order callback: {e}")
-        bot.answer_callback_query(call.id, "❌ An error occurred while cancelling the order.")
+        bot.send_message(call.message.chat.id, "❌ An error occurred while cancelling your order.")
 
-# Update My Orders handler to include inline buttons
-@bot.message_handler(func=lambda message: message.text == '📋 My Orders')
-def my_orders(message):
-    global logger, bot, orders_data
-    logger.info(f"Received My Orders request from user {message.from_user.id}")
-    
+def show_main_menu(chat_id):
+    global logger, bot, types
+    logger.info(f"Showing main menu to chat_id {chat_id}")
     try:
-        user_id = str(message.from_user.id)
-        
-        # Get user's orders
-        user_orders = [order for order in orders_data if order["user_id"] == user_id]
-        
-        if not user_orders:
-            bot.send_message(
-                message.chat.id,
-                "📋 You don't have any orders yet.\n\n"
-                "Use the '👁 View' button to create a new order."
-            )
-            return
-            
-        # Create a message with order details
-        orders_message = "📋 *Your Orders*\n\n"
-        
-        # Create inline keyboard for pending orders
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        has_pending_orders = False
-        
-        for order in user_orders:
-            status_emoji = {
-                "pending": "⏳",
-                "processing": "⚙️",
-                "completed": "✅",
-                "failed": "❌",
-                "cancelled": "🚫"
-            }.get(order["status"], "❓")
-            
-            orders_message += (
-                f"{status_emoji} *Order {order['id']}*\n"
-                f"Views: {order['quantity']:,}\n"
-                f"Status: {order['status'].title()}\n"
-                f"Created: {order['created_at']}\n"
-            )
-            
-            # Add cancel button for pending orders
-            if order["status"] == "pending":
-                has_pending_orders = True
-                markup.add(types.InlineKeyboardButton(
-                    f"Cancel Order {order['id']} ({order['quantity']:,} views)",
-                    callback_data=f"cancel_order_{order['id']}"
-                ))
-            
-            orders_message += "\n"
-        
-        if has_pending_orders:
-            orders_message += "Click the button below to cancel a pending order."
-            markup.add(types.InlineKeyboardButton("❌ Close", callback_data="close_cancel_menu"))
-            bot.send_message(
-                message.chat.id,
-                orders_message,
-                reply_markup=markup,
-                parse_mode="Markdown"
-            )
-        else:
-            orders_message += "Use /cancel to manage your orders."
-            bot.send_message(
-                message.chat.id,
-                orders_message,
-                parse_mode="Markdown"
-            )
-        
-        logger.info(f"Sent orders list to user {message.from_user.id}")
+        keyboard = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+        view_btn = types.KeyboardButton('👁 View')
+        account_btn = types.KeyboardButton('👤 My account')
+        buy_coins_btn = types.KeyboardButton('💳 Buy coins')
+        support_btn = types.KeyboardButton('🆘 Support')
+
+        keyboard.add(view_btn, account_btn)
+        keyboard.add(buy_coins_btn, support_btn)
+
+        bot.send_message(chat_id, "Main menu:", reply_markup=keyboard)
+        logger.info(f"Main menu sent to chat {chat_id}")
     except Exception as e:
-        logger.error(f"Error showing orders: {e}")
-        bot.send_message(message.chat.id, "❌ An error occurred while fetching your orders.")
+        logger.error(f"Error showing main menu: {e}")
+        # Try a simpler approach as fallback
+        try:
+            bot.send_message(chat_id, "Please use /menu to return to the main menu.")
+        except:
+            pass
+
+# Start the bot
+if __name__ == "__main__":
+    try:
+        logger.info("Starting bot...")
+        init_data()
+        logger.info("Bot started")
+        bot.polling(none_stop=True, timeout=60)
+    except Exception as e:
+        logger.critical(f"Critical error: {e}")
+        sys.exit(1)
