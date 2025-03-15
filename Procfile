@@ -1,1 +1,1 @@
-web: gunicorn viewsbot:app 
+web: python viewsbot.py 
