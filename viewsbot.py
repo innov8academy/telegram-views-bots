@@ -379,6 +379,8 @@ def process_delayed_order(order_id):
 def get_user(user_id):
     global users_data, USERS_FILE, logger, datetime, save_data
     user_id = str(user_id)  # Convert to string for JSON storage
+    
+    # Initialize user if not exists
     if user_id not in users_data:
         users_data[user_id] = {
             "coins": 0,
@@ -386,6 +388,20 @@ def get_user(user_id):
             "join_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "orders": []
         }
+        # Save the new user data
+        save_data(USERS_FILE, users_data)
+        logger.info(f"Created new user with ID {user_id}")
+    
+    # Ensure all required fields exist
+    if "coins" not in users_data[user_id]:
+        users_data[user_id]["coins"] = 0
+    if "username" not in users_data[user_id]:
+        users_data[user_id]["username"] = ""
+    if "join_date" not in users_data[user_id]:
+        users_data[user_id]["join_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if "orders" not in users_data[user_id]:
+        users_data[user_id]["orders"] = []
+    
     return users_data[user_id]
 
 def update_user(user_id, data):
@@ -560,6 +576,8 @@ def check_order_status(order_id):
 def get_user(user_id):
     global users_data, USERS_FILE, logger, datetime, save_data
     user_id = str(user_id)  # Convert to string for JSON storage
+    
+    # Initialize user if not exists
     if user_id not in users_data:
         users_data[user_id] = {
             "coins": 0,
@@ -567,6 +585,20 @@ def get_user(user_id):
             "join_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "orders": []
         }
+        # Save the new user data
+        save_data(USERS_FILE, users_data)
+        logger.info(f"Created new user with ID {user_id}")
+    
+    # Ensure all required fields exist
+    if "coins" not in users_data[user_id]:
+        users_data[user_id]["coins"] = 0
+    if "username" not in users_data[user_id]:
+        users_data[user_id]["username"] = ""
+    if "join_date" not in users_data[user_id]:
+        users_data[user_id]["join_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if "orders" not in users_data[user_id]:
+        users_data[user_id]["orders"] = []
+    
     return users_data[user_id]
 
 def update_user(user_id, data):
@@ -916,7 +948,7 @@ def calculate_view_price(quantity):
 
 # Process view quantity with improved UI
 def process_view_quantity(message):
-    global logger, bot, types, settings_data, users_data, get_user
+    global logger, bot, types, settings_data, users_data, get_user, update_user, datetime, save_data, USERS_FILE
     logger.info(f"Processing view quantity from user {message.from_user.id}: {message.text}")
 
     try:
@@ -965,17 +997,27 @@ def process_view_quantity(message):
         # Initialize users_data structure if needed
         user_id = str(message.from_user.id)
         if user_id not in users_data:
-            users_data[user_id] = {}
+            users_data[user_id] = {
+                "coins": 0,
+                "username": message.from_user.username or "",
+                "join_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "orders": []
+            }
+            save_data(USERS_FILE, users_data)
+        elif "coins" not in users_data[user_id]:
+            users_data[user_id]["coins"] = 0
+            save_data(USERS_FILE, users_data)
         
         # Store the quantity in user session
         users_data[user_id]['temp_quantity'] = quantity
+        
         
         # Calculate price based on quantity (1 coin per view)
         price = calculate_view_price(quantity)
         users_data[user_id]['temp_price'] = price
         
         # Get user data for balance check
-        user = get_user(message.from_user.id)
+        user = users_data[user_id]
         
         # Show delivery options with improved UI
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -1015,7 +1057,7 @@ def process_view_quantity(message):
     except Exception as e:
         logger.error(f"Error processing view quantity: {e}")
         # Ensure user gets back to main menu even if there's an error
-        restore_main_menu_keyboard(message.chat.id, f"An error occurred: {str(e)}. Returning to main menu.")
+        restore_main_menu_keyboard(message.chat.id)
 
 # Handle speed selection callbacks
 @bot.callback_query_handler(func=lambda call: (call.data.startswith('speed_') or call.data.startswith('drip_') or call.data == "cancel_view_order"))
