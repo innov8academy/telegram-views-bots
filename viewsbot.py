@@ -2,7 +2,7 @@ import os
 import json
 import telebot
 from telebot import types
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import threading
 import logging
@@ -15,25 +15,42 @@ import atexit
 import sys
 import tempfile
 import threading
-from flask import Flask
+from flask import Flask, render_template
+from functools import wraps
+
+# Import database module
+import database as db
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Telegram Views Bot is running!"
+    """
+    Home route to keep the bot alive on Render.com
+    """
+    return render_template('index.html', status="Bot is running")
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    """
+    Run Flask in a separate thread
+    """
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
 
 # Define the function that will be called to start the web server
 def start_web_server():
+    """
+    Start the web server in a separate thread
+    """
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
+    logger.info("Web server started")
+
 # Set up logging globally
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Process lock mechanism
@@ -79,111 +96,79 @@ lock_file = create_lock_file()
 # Load environment variables
 load_dotenv()
 
-# Bot configuration
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-ADMIN_IDS = [int(id) for id in os.getenv('ADMIN_IDS', '').split(',') if id]
+# Get the bot token from environment variable
+TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+if not TOKEN:
+    logger.critical("No TELEGRAM_BOT_TOKEN found in environment variables")
+    sys.exit(1)
 
-# API configuration
-# Use environment variable for API key instead of hardcoding
-API_KEY = os.getenv('API_KEY', '')  # Default to empty string if not set
-API_URL = "https://cidgrowthmedia.com/api/v2"  # This is a common SMM API URL, adjust if needed
-TELEGRAM_VIEWS_SERVICE_ID = 1313
-
-# API request settings
-API_TIMEOUT = 60  # Increased timeout to 60 seconds
-API_RETRIES = 3   # Number of retries for failed requests
-API_RETRY_DELAY = 5  # Delay between retries in seconds
+# Get admin IDs from environment variable (comma-separated list)
+ADMIN_IDS = []
+admin_ids_env = os.environ.get('ADMIN_IDS', '')
+if admin_ids_env:
+    try:
+        ADMIN_IDS = [int(admin_id.strip()) for admin_id in admin_ids_env.split(',')]
+        logger.info(f"Admin IDs loaded from environment: {ADMIN_IDS}")
+    except ValueError:
+        logger.error("Invalid ADMIN_IDS format in environment variables")
 
 # Bot polling settings
-BOT_POLLING_TIMEOUT = 60  # Increased polling timeout
+BOT_POLLING_TIMEOUT = 60  # Polling timeout in seconds
 BOT_POLLING_INTERVAL = 1  # Polling interval in seconds
-BOT_LONG_POLLING_TIMEOUT = 30  # Long polling timeout
-
-# Data storage (using JSON files for local testing)
-DATA_DIR = "data"
-USERS_FILE = f"{DATA_DIR}/users.json"
-PAYMENTS_FILE = f"{DATA_DIR}/payments.json"
-ORDERS_FILE = f"{DATA_DIR}/orders.json"
-SETTINGS_FILE = f"{DATA_DIR}/settings.json"
-
-# Create data directory if it doesn't exist
-os.makedirs(DATA_DIR, exist_ok=True)
-
-# Default settings
-DEFAULT_SETTINGS = {
-    "prices": {
-        "views_1000": 1000,  # 1000 coins for 1000 views
-        "views_5000": 4500,  # 4500 coins for 5000 views (10% discount)
-        "views_10000": 8500,  # 8500 coins for 10000 views (15% discount)
-        "views_50000": 40000  # 40000 coins for 50000 views (20% discount)
-    },
-    "price_per_1000": 0.034,  # Price per 1000 coins in USD
-    "coin_packages": {
-        "package_1": {"coins": 10000, "price": 0.034},
-        "package_2": {"coins": 50000, "price": 0.17},
-        "package_3": {"coins": 100000, "price": 0.30},
-        "package_4": {"coins": 500000, "price": 1.50},
-    },
-    "payment_admin_username": "AdminPaymentUser",
-    "support_username": "SupportUser",  # Default support username
-    "admin_ids": ADMIN_IDS  # Initialize with environment variable admin IDs
-}
+BOT_LONG_POLLING_TIMEOUT = 30  # Long polling timeout in seconds
 
 # Initialize bot with custom settings
 bot = telebot.TeleBot(TOKEN, threaded=False)  # Disable threading to prevent timeout issues
 
-# Global data containers - defining these at module level to fix scope issues
+# Global data containers
 users_data = {}
 payments_data = []
 orders_data = []
-settings_data = DEFAULT_SETTINGS
+settings_data = db.DEFAULT_SETTINGS
 order_timers = {}  # Store timer objects for delayed orders
 
 # Data management functions
 def load_data(file_path, default=None):
-    if default is None:
-        default = {}
-    try:
-        if os.path.exists(file_path):
-            data = json.load(open(file_path, 'r'))
-            # If this is settings file and admin_ids is empty, initialize with environment variable admin IDs
-            if file_path == SETTINGS_FILE and (not data.get("admin_ids") or len(data.get("admin_ids", [])) == 0):
-                data["admin_ids"] = ADMIN_IDS
-                save_data(file_path, data)
-            return data
-        else:
-            with open(file_path, 'w') as f:
-                json.dump(default, f)
-            return default
-    except Exception as e:
-        logger.error(f"Error loading {file_path}: {e}")
-        return default
+    """
+    Load data from database or local JSON file
+    """
+    if file_path == db.USERS_FILE:
+        return db.load_data(db.USERS_TABLE, file_path, default)
+    elif file_path == db.ORDERS_FILE:
+        return db.load_data(db.ORDERS_TABLE, file_path, default)
+    elif file_path == db.PAYMENTS_FILE:
+        return db.load_data(db.PAYMENTS_TABLE, file_path, default)
+    elif file_path == db.SETTINGS_FILE:
+        return db.load_data(db.SETTINGS_TABLE, file_path, default)
+    else:
+        return db.load_from_file(file_path, default)
 
 def save_data(file_path, data):
-    try:
-        # Ensure directory exists
-        directory = os.path.dirname(file_path)
-        if directory and not os.path.exists(directory):
-            os.makedirs(directory, exist_ok=True)
-            logger.info(f"Created directory: {directory}")
-            
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
-        logger.info(f"Successfully saved data to {file_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Error saving to {file_path}: {e}")
-        return False
+    """
+    Save data to database or local JSON file
+    """
+    if file_path == db.USERS_FILE:
+        return db.save_data(db.USERS_TABLE, file_path, data)
+    elif file_path == db.ORDERS_FILE:
+        return db.save_data(db.ORDERS_TABLE, file_path, data)
+    elif file_path == db.PAYMENTS_FILE:
+        return db.save_data(db.PAYMENTS_TABLE, file_path, data)
+    elif file_path == db.SETTINGS_FILE:
+        return db.save_data(db.SETTINGS_TABLE, file_path, data)
+    else:
+        return db.save_to_file(file_path, data)
 
 # Load initial data
 def init_data():
-    global users_data, payments_data, orders_data, settings_data, USERS_FILE, PAYMENTS_FILE, ORDERS_FILE, SETTINGS_FILE, ADMIN_IDS
-    users_data = load_data(USERS_FILE, {})
-    payments_data = load_data(PAYMENTS_FILE, [])
-    orders_data = load_data(ORDERS_FILE, [])
-    settings_data = load_data(SETTINGS_FILE, DEFAULT_SETTINGS)
+    global users_data, payments_data, orders_data, settings_data, ADMIN_IDS
+    users_data = load_data(db.USERS_FILE, {})
+    payments_data = load_data(db.PAYMENTS_FILE, [])
+    orders_data = load_data(db.ORDERS_FILE, [])
+    settings_data = load_data(db.SETTINGS_FILE, db.DEFAULT_SETTINGS)
     # Update global ADMIN_IDS with settings
-    ADMIN_IDS = settings_data.get("admin_ids", [])
+    admin_ids_from_settings = settings_data.get("admin_ids", [])
+    if admin_ids_from_settings:
+        ADMIN_IDS = admin_ids_from_settings
     # If no admins, add the first user who starts the bot as admin
     if not ADMIN_IDS:
         logger.warning("No admin IDs found in settings. First user to start the bot will be made admin.")
@@ -251,23 +236,25 @@ def with_retry(max_retries=3, retry_delay=5):
 
 # Function to update order status
 def update_order_status(order_id, status, error=None, api_response=None):
-    global orders_data, ORDERS_FILE
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """
+    Update the status of an order in the database
+    """
+    global orders_data
     
-    for i, o in enumerate(orders_data):
-        if o["id"] == order_id:
-            orders_data[i]["status"] = status
-            orders_data[i]["last_attempt"] = current_time
-            if status == "processing" and not orders_data[i].get("processing_started"):
-                orders_data[i]["processing_started"] = current_time
+    # Update in database
+    db.update_order_status(order_id, status, error, api_response)
+    
+    # Also update in memory
+    for order in orders_data:
+        if order["id"] == order_id:
+            order["status"] = status
             if error:
-                orders_data[i]["error"] = error
+                order["error"] = error
             if api_response:
-                orders_data[i]["api_response"] = api_response
-                orders_data[i]["api_order_id"] = api_response
+                order["api_response"] = api_response
             break
     
-    save_data(ORDERS_FILE, orders_data)
+    logger.info(f"Updated order {order_id} status to {status}")
 
 @with_retry(max_retries=3, retry_delay=5)
 def send_view_order_to_api(order):
@@ -377,38 +364,34 @@ def process_delayed_order(order_id):
 
 # User management functions
 def get_user(user_id):
-    global users_data, USERS_FILE, logger, datetime, save_data
+    """
+    Get user data from database
+    """
+    global users_data
+    
     user_id = str(user_id)  # Convert to string for JSON storage
     
-    # Initialize user if not exists
-    if user_id not in users_data:
-        users_data[user_id] = {
-            "coins": 0,
-            "username": "",
-            "join_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "orders": []
-        }
-        # Save the new user data
-        save_data(USERS_FILE, users_data)
-        logger.info(f"Created new user with ID {user_id}")
+    # Get from database
+    user = db.get_user(user_id)
     
-    # Ensure all required fields exist
-    if "coins" not in users_data[user_id]:
-        users_data[user_id]["coins"] = 0
-    if "username" not in users_data[user_id]:
-        users_data[user_id]["username"] = ""
-    if "join_date" not in users_data[user_id]:
-        users_data[user_id]["join_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if "orders" not in users_data[user_id]:
-        users_data[user_id]["orders"] = []
+    # Update in-memory cache
+    users_data[user_id] = user
     
-    return users_data[user_id]
+    return user
 
 def update_user(user_id, data):
-    global users_data, USERS_FILE, logger, save_data
+    """
+    Update user data in database
+    """
+    global users_data
+    
     user_id = str(user_id)  # Convert to string for JSON storage
+    
+    # Update in database
+    db.update_user(user_id, data)
+    
+    # Update in-memory cache
     users_data[user_id] = data
-    save_data(USERS_FILE, users_data)
 
 # Helper function to create a keyboard with cancel button
 def get_cancel_keyboard():
@@ -446,72 +429,39 @@ def restore_main_menu_keyboard(chat_id, message=None):
 
 # API functions
 def submit_order(post_link, quantity, runs=None, interval=None):
-    """Submit an order to the API for Telegram views with optional drip feed parameters"""
-    try:
-        payload = {
-            'key': API_KEY,
-            'action': 'add',
-            'service': TELEGRAM_VIEWS_SERVICE_ID,
-            'link': post_link,
-            'quantity': quantity
-        }
-
-        # Add drip feed parameters if provided
-        if runs and interval:
-            payload['runs'] = runs
-            payload['interval'] = interval
-
-        logger.info(f"Submitting order to API: {post_link}, {quantity} views, Drip feed: {'Yes' if runs else 'No'}")
-        logger.info(f"Payload: {payload}")
-
-        response = requests.post(API_URL, data=payload, timeout=30)  # Add timeout
-
-        if response.status_code == 200:
-            result = response.json()
-            logger.info(f"API response: {result}")
-
-            if 'order' in result:
-                return {
-                    'success': True,
-                    'order_id': result['order']
-                }
-            elif 'error' in result:
-                return {
-                    'success': False,
-                    'error': result['error']
-                }
-            else:
-                # If response is successful but doesn't match expected format
-                logger.warning(f"Unexpected API response format: {result}")
-                return {
-                    'success': False,
-                    'error': f"Unexpected API response format: {result}"
-                }
-
-        logger.error(f"API request failed with status code: {response.status_code}")
-        logger.error(f"Response content: {response.text}")
-        return {
-            'success': False,
-            'error': f"API request failed with status code: {response.status_code}"
-        }
-    except requests.exceptions.Timeout:
-        logger.error("API request timed out")
-        return {
-            'success': False,
-            'error': "API request timed out. Please try again later."
-        }
-    except requests.exceptions.ConnectionError:
-        logger.error("Connection error when connecting to API")
-        return {
-            'success': False,
-            'error': "Connection error. Please check your network and try again."
-        }
-    except Exception as e:
-        logger.error(f"Error submitting order to API: {e}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+    """
+    Submit a new order to the system
+    """
+    global orders_data
+    
+    # Generate a unique order ID
+    order_id = generate_order_id()
+    
+    # Create order data
+    order_data = {
+        "id": order_id,
+        "post_link": post_link,
+        "quantity": quantity,
+        "status": "pending",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    # Add API parameters if provided
+    if runs:
+        order_data["api_runs"] = runs
+    if interval:
+        order_data["api_interval"] = interval
+    
+    # Add order to database
+    db.add_order(order_data)
+    
+    # Add to in-memory cache
+    orders_data.append(order_data)
+    
+    logger.info(f"Submitted new order {order_id} for {quantity} views")
+    
+    return order_id
 
 def check_order_status(order_id):
     """Check the status of an order"""
@@ -574,38 +524,34 @@ def check_order_status(order_id):
 
 # User management functions
 def get_user(user_id):
-    global users_data, USERS_FILE, logger, datetime, save_data
+    """
+    Get user data from database
+    """
+    global users_data
+    
     user_id = str(user_id)  # Convert to string for JSON storage
     
-    # Initialize user if not exists
-    if user_id not in users_data:
-        users_data[user_id] = {
-            "coins": 0,
-            "username": "",
-            "join_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "orders": []
-        }
-        # Save the new user data
-        save_data(USERS_FILE, users_data)
-        logger.info(f"Created new user with ID {user_id}")
+    # Get from database
+    user = db.get_user(user_id)
     
-    # Ensure all required fields exist
-    if "coins" not in users_data[user_id]:
-        users_data[user_id]["coins"] = 0
-    if "username" not in users_data[user_id]:
-        users_data[user_id]["username"] = ""
-    if "join_date" not in users_data[user_id]:
-        users_data[user_id]["join_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if "orders" not in users_data[user_id]:
-        users_data[user_id]["orders"] = []
+    # Update in-memory cache
+    users_data[user_id] = user
     
-    return users_data[user_id]
+    return user
 
 def update_user(user_id, data):
-    global users_data, USERS_FILE, logger, save_data
+    """
+    Update user data in database
+    """
+    global users_data
+    
     user_id = str(user_id)  # Convert to string for JSON storage
+    
+    # Update in database
+    db.update_user(user_id, data)
+    
+    # Update in-memory cache
     users_data[user_id] = data
-    save_data(USERS_FILE, users_data)
 
 # Helper function to create a keyboard with cancel button
 def get_cancel_keyboard():
@@ -2327,18 +2273,22 @@ def admin_back_to_manage_callback(call):
 
 # Initialize data and start bot
 if __name__ == '__main__':
-    # Start the web server
-    start_web_server()
     try:
+        logger.info("Starting bot...")
         init_data()
+        
+        # Start the web server
+        start_web_server()
+        
         logger.info("Bot started")
         
+        # Start polling with error handling and retries
         while True:
             try:
                 bot.polling(
-                    none_stop=True,
-                    timeout=BOT_POLLING_TIMEOUT,
-                    interval=BOT_POLLING_INTERVAL,
+                    none_stop=True, 
+                    interval=BOT_POLLING_INTERVAL, 
+                    timeout=BOT_POLLING_TIMEOUT, 
                     long_polling_timeout=BOT_LONG_POLLING_TIMEOUT
                 )
             except requests.exceptions.ReadTimeout:
@@ -2356,12 +2306,13 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        logger.critical(f"Critical error: {e}")
+        sys.exit(1)
     finally:
         # Clean up lock file
-        if os.path.exists(lock_file):
+        if os.path.exists(db.LOCK_FILE):
             try:
-                os.remove(lock_file)
+                os.remove(db.LOCK_FILE)
             except:
                 pass
 
