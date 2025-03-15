@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Views Bot</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #0088cc;
+            text-align: center;
+        }
+        .status {
+            text-align: center;
+            padding: 15px;
+            background-color: #e3f2fd;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        .status.online {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        .links {
+            margin-top: 30px;
+        }
+        .links a {
+            color: #0088cc;
+            text-decoration: none;
+        }
+        .links a:hover {
+            text-decoration: underline;
+        }
+        footer {
+            margin-top: 30px;
+            text-align: center;
+            font-size: 0.9em;
+            color: #777;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Telegram Views Bot</h1>
+        
+        <div class="status online">
+            <h2>{{ status }}</h2>
+        </div>
+        
+        <div class="description">
+            <h3>About the Bot</h3>
+            <p>This bot helps you increase views on your Telegram posts. Use it to boost visibility and engagement for your content.</p>
+            
+            <h3>Features</h3>
+            <ul>
+                <li>Add views to any Telegram post</li>
+                <li>Multiple delivery speed options</li>
+                <li>Drip feed functionality</li>
+                <li>User-friendly interface</li>
+                <li>Secure payment system</li>
+            </ul>
+        </div>
+        
+        <div class="links">
+            <h3>Useful Links</h3>
+            <ul>
+                <li><a href="/health">Health Check</a></li>
+                <li><a href="/test">API Test</a></li>
+                <li><a href="https://t.me/your_bot_username" target="_blank">Open Bot in Telegram</a></li>
+            </ul>
+        </div>
+        
+        <footer>
+            &copy; 2025 Telegram Views Bot. All rights reserved.
+        </footer>
+    </div>
+</body>
+</html> 
