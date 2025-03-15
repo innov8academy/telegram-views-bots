@@ -37,6 +37,41 @@ def health():
     """
     return jsonify({"status": "ok", "message": "Bot is running"})
 
+@app.route('/test')
+def test():
+    """
+    Test endpoint to check if the bot is working
+    """
+    try:
+        # Test database connection
+        db_status = "ok" if db.test_connection() else "error"
+        
+        # Test bot connection
+        bot_status = "ok"
+        try:
+            bot_info = bot.get_me()
+            bot_username = bot_info.username
+        except Exception as e:
+            bot_status = f"error: {str(e)}"
+            bot_username = "unknown"
+        
+        return jsonify({
+            "status": "ok",
+            "database": db_status,
+            "bot": bot_status,
+            "bot_username": bot_username,
+            "admin_ids": ADMIN_IDS,
+            "env_vars": {
+                "TELEGRAM_BOT_TOKEN": bool(TOKEN),
+                "ADMIN_IDS": bool(admin_ids_env),
+                "SUPABASE_URL": bool(os.environ.get('SUPABASE_URL')),
+                "SUPABASE_KEY": bool(os.environ.get('SUPABASE_KEY')),
+                "PORT": os.environ.get('PORT', 10000)
+            }
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
 def run_flask():
     """
     Run Flask in a separate thread
@@ -45,7 +80,7 @@ def run_flask():
     port = int(os.environ.get('PORT', 10000))
     print(f"Starting Flask server on port {port}")
     sys.stdout.flush()
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=True)
 
 # Define the function that will be called to start the web server
 def start_web_server():
@@ -65,9 +100,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Process lock mechanism
-def create_lock_file():
-    lock_file = os.path.join(tempfile.gettempdir(), 'telegram_bot.lock')
-    if os.path.exists(lock_file):
+def create_lock_file(force=False):
+    # Use the data directory for the lock file
+    if not os.path.exists(db.DATA_DIR):
+        os.makedirs(db.DATA_DIR, exist_ok=True)
+    
+    lock_file = db.LOCK_FILE
+    
+    if os.path.exists(lock_file) and not force:
         try:
             with open(lock_file, 'r') as f:
                 pid = int(f.read().strip())
@@ -80,12 +120,14 @@ def create_lock_file():
                     if process != 0:
                         kernel32.CloseHandle(process)
                         logger.error(f"Another bot instance is already running (PID: {pid})")
+                        logger.error(f"If you're sure no other instance is running, delete {lock_file} or use --force")
                         sys.exit(1)
                 else:
                     # Unix-based systems
                     try:
                         os.kill(pid, 0)
                         logger.error(f"Another bot instance is already running (PID: {pid})")
+                        logger.error(f"If you're sure no other instance is running, delete {lock_file} or use --force")
                         sys.exit(1)
                     except OSError:
                         # Process is not running, we can create a new lock
@@ -130,6 +172,12 @@ BOT_LONG_POLLING_TIMEOUT = 30  # Long polling timeout in seconds
 
 # Initialize bot with custom settings
 bot = telebot.TeleBot(TOKEN, threaded=False)  # Disable threading to prevent timeout issues
+
+# API configuration for views service
+API_KEY = os.environ.get('API_KEY', '')  # Your API key for the views service
+API_URL = os.environ.get('API_URL', 'https://example.com/api')  # API endpoint
+TELEGRAM_VIEWS_SERVICE_ID = os.environ.get('TELEGRAM_VIEWS_SERVICE_ID', '1')  # Service ID for Telegram views
+API_TIMEOUT = 60  # Timeout for API requests in seconds
 
 # Global data containers
 users_data = {}
@@ -535,71 +583,6 @@ def check_order_status(order_id):
             'error': str(e)
         }
 
-# User management functions
-def get_user(user_id):
-    """
-    Get user data from database
-    """
-    global users_data
-    
-    user_id = str(user_id)  # Convert to string for JSON storage
-    
-    # Get from database
-    user = db.get_user(user_id)
-    
-    # Update in-memory cache
-    users_data[user_id] = user
-    
-    return user
-
-def update_user(user_id, data):
-    """
-    Update user data in database
-    """
-    global users_data
-    
-    user_id = str(user_id)  # Convert to string for JSON storage
-    
-    # Update in database
-    db.update_user(user_id, data)
-    
-    # Update in-memory cache
-    users_data[user_id] = data
-
-# Helper function to create a keyboard with cancel button
-def get_cancel_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(types.KeyboardButton('❌ Cancel'))
-    return markup
-
-# Helper function to restore main menu keyboard
-def restore_main_menu_keyboard(chat_id, message=None):
-    global logger, bot
-    logger.info(f"Restoring main menu keyboard for chat {chat_id}")
-    
-    try:
-        keyboard = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-        view_btn = types.KeyboardButton('👁 View')
-        account_btn = types.KeyboardButton('👤 My account')
-        buy_coins_btn = types.KeyboardButton('💳 Buy coins')
-        support_btn = types.KeyboardButton('🆘 Support')
-
-        keyboard.add(view_btn, account_btn)
-        keyboard.add(buy_coins_btn, support_btn)
-        
-        if message:
-            bot.send_message(chat_id, message, reply_markup=keyboard)
-        else:
-            bot.send_message(chat_id, "Main menu:", reply_markup=keyboard)
-        logger.info(f"Main menu keyboard restored for chat {chat_id}")
-    except Exception as e:
-        logger.error(f"Error restoring main menu keyboard: {e}")
-        # Try a simpler approach as fallback
-        try:
-            bot.send_message(chat_id, "Please use /menu to return to the main menu.")
-        except:
-            pass
-
 # Start command handler
 @bot.message_handler(commands=['start'])
 def start_command(message):
@@ -779,38 +762,22 @@ def process_coin_purchase_amount(message):
             f"Send them the following information:\n"
             f"- Your Payment Reference: `{payment_ref}`\n"
             f"- Amount: {coin_amount:,} coins\n"
-            f"- Price: ${total_price:.2f}\n\n"
-            f"Once your payment is verified, the coins will be added to your account."
-        )
-        
-        # Add a button to contact the admin directly
-        inline_markup = types.InlineKeyboardMarkup(row_width=1)
-        inline_markup.add(
-            types.InlineKeyboardButton(f"Contact @{payment_admin}", url=f"https://t.me/{payment_admin}")
+            f"- Total Price: ${total_price:.2f}"
         )
 
-        bot.send_message(
-            message.chat.id,
-            payment_instructions,
-            reply_markup=inline_markup,
-            parse_mode="Markdown"
-        )
-        
-        # Restore the main menu keyboard
-        restore_main_menu_keyboard(message.chat.id, "You can continue using the bot:")
-        
+        bot.send_message(message.chat.id, payment_instructions, parse_mode="Markdown")
         logger.info(f"Payment instructions sent to user {message.from_user.id}")
     except Exception as e:
-        logger.error(f"Error processing coin purchase amount: {e}")
+        logger.error(f"Error handling coin purchase: {e}")
         # Ensure user gets back to main menu even if there's an error
         restore_main_menu_keyboard(message.chat.id, "An error occurred. Returning to main menu.")
 
-# View handler with cancel option
-@bot.message_handler(func=lambda message: message.text == '👁 View')
-def view_service(message):
-    global logger, bot, types, users_data
-    logger.info(f"Received View service request from user {message.from_user.id}")
-
+# Support button handler
+@bot.message_handler(func=lambda message: message.text == '🆘 Support')
+def support_handler(message):
+    global logger, bot, settings_data, users_data
+    logger.info(f"Support request from user {message.from_user.id}")
+    
     try:
         # Clear any pending input states
         user_id = str(message.from_user.id)
@@ -818,6 +785,660 @@ def view_service(message):
             for key in list(users_data[user_id].keys()):
                 if key.startswith('temp_'):
                     del users_data[user_id][key]
+
+        # Reload settings to ensure we have the latest support username
+        settings_data = load_data(db.SETTINGS_FILE, db.DEFAULT_SETTINGS)
+        support_username = settings_data.get("support_username", "admin")
+        
+        # Send support information
+        support_message = (
+            f"🆘 *Support*\n\n"
+            f"If you need help or have any questions, please contact our support:\n"
+            f"👤 @{support_username}\n\n"
+            f"Please include your user ID: `{user_id}` in your message."
+        )
+        
+        bot.send_message(message.chat.id, support_message, parse_mode="Markdown")
+        logger.info(f"Support information sent to user {user_id}")
+    except Exception as e:
+        logger.error(f"Error handling support request: {e}")
+        # Ensure user gets back to main menu even if there's an error
+        restore_main_menu_keyboard(message.chat.id, "An error occurred. Returning to main menu.")
+
+# Admin command handler
+@bot.message_handler(commands=['admin'])
+def admin_command(message):
+    global logger, bot, ADMIN_IDS
+    logger.info(f"Received /admin command from user {message.from_user.id}")
+    
+    try:
+        # Check if user is an admin
+        if message.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin access attempt by user {message.from_user.id}")
+            bot.send_message(message.chat.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Show admin panel
+        show_admin_panel(message.chat.id)
+    except Exception as e:
+        logger.error(f"Error handling admin command: {e}")
+        bot.send_message(message.chat.id, f"Error: {str(e)}")
+
+# Function to show admin panel
+def show_admin_panel(chat_id):
+    global logger, bot, types, restore_main_menu_keyboard
+    logger.info(f"Showing admin panel to chat_id {chat_id}")
+    
+    try:
+        # Ensure the main menu keyboard is restored
+        restore_main_menu_keyboard(chat_id)
+        
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        manage_users_btn = types.InlineKeyboardButton("👥 Manage Users", callback_data="admin_manage_users")
+        manage_admins_btn = types.InlineKeyboardButton("👑 Manage Admins", callback_data="admin_manage_admins")
+        settings_btn = types.InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings")
+        stats_btn = types.InlineKeyboardButton("📊 Statistics", callback_data="admin_stats")
+        back_btn = types.InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")
+        
+        markup.add(manage_users_btn, manage_admins_btn, settings_btn, stats_btn, back_btn)
+        
+        bot.send_message(
+            chat_id,
+            "👑 *Admin Panel*\n\nSelect an option:",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+        logger.info(f"Admin panel sent to chat_id {chat_id}")
+    except Exception as e:
+        logger.error(f"Error showing admin panel: {e}")
+        bot.send_message(chat_id, f"Error: {str(e)}")
+
+# Admin callback handler
+@bot.callback_query_handler(func=lambda call: (call.data.startswith('admin_') and not call.data == "admin_back_to_panel") or call.data == "back_to_menu")
+def admin_callback_handler(call):
+    global logger, bot, types, settings_data, users_data, payments_data, orders_data
+    logger.info(f"Admin callback from user {call.from_user.id}: {call.data}")
+    
+    try:
+        # Check if user is an admin
+        if call.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin callback attempt by user {call.from_user.id}")
+            bot.answer_callback_query(call.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Handle different admin actions
+        if call.data == "admin_manage_users":
+            # Show user management options
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            add_coins_btn = types.InlineKeyboardButton("💰 Add Coins to User", callback_data="admin_add_coins")
+            create_user_btn = types.InlineKeyboardButton("👤 Create New User", callback_data="admin_create_user")
+            view_users_btn = types.InlineKeyboardButton("👥 View All Users", callback_data="admin_view_users")
+            back_btn = types.InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_back_to_panel")
+            
+            markup.add(add_coins_btn, create_user_btn, view_users_btn, back_btn)
+            
+            bot.edit_message_text(
+                "👥 *User Management*\n\nSelect an option:",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+            
+        elif call.data == "admin_add_coins":
+            # Ask for user ID to add coins to
+            bot.edit_message_text(
+                "💰 *Add Coins to User*\n\nPlease enter the user ID:",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown"
+            )
+            
+            # Register next step handler
+            bot.register_next_step_handler(call.message, admin_get_user_id_for_coins)
+            
+        elif call.data == "admin_settings":
+            # Show settings options
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            change_payment_btn = types.InlineKeyboardButton("💳 Change Payment Username", callback_data="admin_change_payment")
+            change_support_btn = types.InlineKeyboardButton("🆘 Change Support Username", callback_data="admin_change_support")
+            change_price_btn = types.InlineKeyboardButton("💲 Change Coin Price", callback_data="admin_change_price")
+            back_btn = types.InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_back_to_panel")
+            
+            markup.add(change_payment_btn, change_support_btn, change_price_btn, back_btn)
+            
+            bot.edit_message_text(
+                "⚙️ *Settings*\n\nSelect an option:",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+            
+        elif call.data == "admin_change_payment":
+            # Ask for new payment username
+            current_username = settings_data.get("payment_admin_username", "admin")
+            
+            bot.edit_message_text(
+                f"💳 *Change Payment Username*\n\nCurrent payment username: @{current_username}\n\nPlease enter the new payment username (without @):",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown"
+            )
+            
+            # Register next step handler
+            bot.register_next_step_handler(call.message, admin_change_payment_username)
+            
+        elif call.data == "admin_change_support":
+            # Ask for new support username
+            current_username = settings_data.get("support_username", "admin")
+            
+            bot.edit_message_text(
+                f"🆘 *Change Support Username*\n\nCurrent support username: @{current_username}\n\nPlease enter the new support username (without @):",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown"
+            )
+            
+            # Register next step handler
+            bot.register_next_step_handler(call.message, admin_change_support_username)
+            
+        elif call.data == "admin_change_price":
+            # Ask for new coin price
+            current_price = settings_data.get("price_per_1000", 0.034)
+            
+            bot.edit_message_text(
+                f"💲 *Change Coin Price*\n\nCurrent price: ${current_price:.3f} per 1000 coins\n\nPlease enter the new price per 1000 coins (e.g., 0.034):",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown"
+            )
+            
+            # Register next step handler
+            bot.register_next_step_handler(call.message, admin_change_coin_price)
+            
+        elif call.data == "admin_manage_admins":
+            # Show admin management options
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            
+            # Add button to add new admin
+            add_admin_btn = types.InlineKeyboardButton("➕ Add New Admin", callback_data="admin_add_new_admin")
+            markup.add(add_admin_btn)
+            
+            # Add buttons for each existing admin (to remove)
+            for admin_id in ADMIN_IDS:
+                # Don't allow removing yourself
+                if admin_id != call.from_user.id:
+                    admin_btn = types.InlineKeyboardButton(f"❌ Remove Admin: {admin_id}", callback_data=f"admin_remove_{admin_id}")
+                    markup.add(admin_btn)
+            
+            back_btn = types.InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_back_to_panel")
+            markup.add(back_btn)
+            
+            bot.edit_message_text(
+                "👑 *Admin Management*\n\nCurrent admins:\n" + "\n".join([f"- {admin_id}" for admin_id in ADMIN_IDS]),
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+            
+        elif call.data == "admin_stats":
+            # Show statistics
+            total_users = len(users_data)
+            total_orders = len(orders_data)
+            total_payments = len(payments_data)
+            
+            # Calculate completed orders
+            completed_orders = sum(1 for order in orders_data if order.get("status") == "completed")
+            
+            # Calculate total coins in circulation
+            total_coins = sum(user.get("coins", 0) for user_id, user in users_data.items())
+            
+            stats_message = (
+                f"📊 *Bot Statistics*\n\n"
+                f"👥 Total Users: {total_users}\n"
+                f"📦 Total Orders: {total_orders}\n"
+                f"✅ Completed Orders: {completed_orders}\n"
+                f"💰 Total Coins in Circulation: {total_coins}\n"
+                f"💳 Total Payments: {total_payments}\n"
+            )
+            
+            markup = types.InlineKeyboardMarkup()
+            back_btn = types.InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_back_to_panel")
+            markup.add(back_btn)
+            
+            bot.edit_message_text(
+                stats_message,
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+            
+        elif call.data == "back_to_menu":
+            # Delete the admin panel message
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            
+            # Show main menu
+            restore_main_menu_keyboard(call.message.chat.id, "Returned to main menu.")
+            
+    except Exception as e:
+        logger.error(f"Error handling admin callback: {e}")
+        bot.answer_callback_query(call.id, f"Error: {str(e)}")
+
+# Admin back to panel callback handler
+@bot.callback_query_handler(func=lambda call: call.data == "admin_back_to_panel")
+def admin_back_to_panel_callback(call):
+    global logger, bot
+    logger.info(f"Admin back to panel callback from user {call.from_user.id}")
+    
+    try:
+        # Check if user is an admin
+        if call.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin callback attempt by user {call.from_user.id}")
+            bot.answer_callback_query(call.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Show admin panel
+        show_admin_panel(call.message.chat.id)
+        
+        # Delete the previous message
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except Exception as e:
+        logger.error(f"Error handling admin back to panel callback: {e}")
+        bot.answer_callback_query(call.id, f"Error: {str(e)}")
+
+# Admin add new admin callback handler
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_new_admin")
+def admin_add_new_admin_callback(call):
+    global logger, bot
+    logger.info(f"Admin add new admin callback from user {call.from_user.id}")
+    
+    try:
+        # Check if user is an admin
+        if call.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin callback attempt by user {call.from_user.id}")
+            bot.answer_callback_query(call.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Ask for new admin ID
+        bot.edit_message_text(
+            "👑 *Add New Admin*\n\nPlease enter the user ID of the new admin:",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="Markdown"
+        )
+        
+        # Register next step handler
+        bot.register_next_step_handler(call.message, process_new_admin_id)
+    except Exception as e:
+        logger.error(f"Error handling admin add new admin callback: {e}")
+        bot.answer_callback_query(call.id, f"Error: {str(e)}")
+
+# Process new admin ID
+def process_new_admin_id(message):
+    global logger, bot, ADMIN_IDS, settings_data, save_data
+    logger.info(f"Processing new admin ID from user {message.from_user.id}: {message.text}")
+    
+    try:
+        # Check if user is an admin
+        if message.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin action attempt by user {message.from_user.id}")
+            bot.send_message(message.chat.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Parse the new admin ID
+        try:
+            new_admin_id = int(message.text.strip())
+        except ValueError:
+            bot.send_message(message.chat.id, "Invalid user ID. Please enter a valid numeric ID.")
+            # Show admin panel again
+            show_admin_panel(message.chat.id)
+            return
+            
+        # Check if already an admin
+        if new_admin_id in ADMIN_IDS:
+            bot.send_message(message.chat.id, f"User {new_admin_id} is already an admin.")
+            # Show admin panel again
+            show_admin_panel(message.chat.id)
+            return
+            
+        # Add to admin list
+        ADMIN_IDS.append(new_admin_id)
+        
+        # Update settings
+        settings_data["admin_ids"] = ADMIN_IDS
+        save_data(db.SETTINGS_FILE, settings_data)
+        
+        bot.send_message(message.chat.id, f"User {new_admin_id} has been added as an admin.")
+        logger.info(f"Added new admin: {new_admin_id}")
+        
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+    except Exception as e:
+        logger.error(f"Error processing new admin ID: {e}")
+        bot.send_message(message.chat.id, f"Error: {str(e)}")
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+
+# Admin remove admin callback handler
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_remove_"))
+def admin_remove_admin_callback(call):
+    global logger, bot, ADMIN_IDS, settings_data, save_data
+    logger.info(f"Admin remove admin callback from user {call.from_user.id}: {call.data}")
+    
+    try:
+        # Check if user is an admin
+        if call.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin callback attempt by user {call.from_user.id}")
+            bot.answer_callback_query(call.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Parse the admin ID to remove
+        admin_id_to_remove = int(call.data.replace("admin_remove_", ""))
+        
+        # Check if trying to remove self
+        if admin_id_to_remove == call.from_user.id:
+            bot.answer_callback_query(call.id, "You cannot remove yourself as an admin.")
+            return
+            
+        # Remove from admin list
+        if admin_id_to_remove in ADMIN_IDS:
+            ADMIN_IDS.remove(admin_id_to_remove)
+            
+            # Update settings
+            settings_data["admin_ids"] = ADMIN_IDS
+            save_data(db.SETTINGS_FILE, settings_data)
+            
+            bot.answer_callback_query(call.id, f"Admin {admin_id_to_remove} has been removed.")
+            logger.info(f"Removed admin: {admin_id_to_remove}")
+            
+            # Show admin panel again
+            show_admin_panel(call.message.chat.id)
+            
+            # Delete the previous message
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        else:
+            bot.answer_callback_query(call.id, f"User {admin_id_to_remove} is not an admin.")
+    except Exception as e:
+        logger.error(f"Error handling admin remove admin callback: {e}")
+        bot.answer_callback_query(call.id, f"Error: {str(e)}")
+
+# Admin get user ID for coins
+def admin_get_user_id_for_coins(message):
+    global logger, bot, users_data
+    logger.info(f"Admin getting user ID for coins from user {message.from_user.id}: {message.text}")
+    
+    try:
+        # Check if user is an admin
+        if message.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin action attempt by user {message.from_user.id}")
+            bot.send_message(message.chat.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Parse the user ID
+        try:
+            user_id = str(message.text.strip())
+        except ValueError:
+            bot.send_message(message.chat.id, "Invalid user ID. Please enter a valid ID.")
+            # Show admin panel again
+            show_admin_panel(message.chat.id)
+            return
+            
+        # Check if user exists
+        user = get_user(user_id)
+        
+        if not user:
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            create_btn = types.InlineKeyboardButton("Create User", callback_data=f"admin_create_user_{user_id}")
+            retry_btn = types.InlineKeyboardButton("Try Again", callback_data="admin_retry_user_id")
+            back_btn = types.InlineKeyboardButton("Back", callback_data="admin_back_to_panel")
+            markup.add(create_btn, retry_btn, back_btn)
+            
+            bot.send_message(
+                message.chat.id,
+                f"User {user_id} does not exist. Would you like to create this user?",
+                reply_markup=markup
+            )
+            return
+            
+        # Ask for coin amount
+        bot.send_message(
+            message.chat.id,
+            f"💰 *Add Coins to User*\n\nUser: {user_id}\nCurrent coins: {user.get('coins', 0)}\n\nPlease enter the amount of coins to add:",
+            parse_mode="Markdown"
+        )
+        
+        # Store user ID in admin's user data
+        admin_id = str(message.from_user.id)
+        if admin_id not in users_data:
+            users_data[admin_id] = {}
+        users_data[admin_id]["temp_add_coins_user_id"] = user_id
+        
+        # Register next step handler
+        bot.register_next_step_handler(message, admin_add_coins_to_user)
+    except Exception as e:
+        logger.error(f"Error getting user ID for coins: {e}")
+        bot.send_message(message.chat.id, f"Error: {str(e)}")
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+
+# Admin add coins to user
+def admin_add_coins_to_user(message):
+    global logger, bot, users_data
+    logger.info(f"Admin adding coins to user from user {message.from_user.id}: {message.text}")
+    
+    try:
+        # Check if user is an admin
+        if message.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin action attempt by user {message.from_user.id}")
+            bot.send_message(message.chat.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Get the user ID from admin's user data
+        admin_id = str(message.from_user.id)
+        if admin_id not in users_data or "temp_add_coins_user_id" not in users_data[admin_id]:
+            bot.send_message(message.chat.id, "Error: User ID not found. Please try again.")
+            # Show admin panel again
+            show_admin_panel(message.chat.id)
+            return
+            
+        user_id = users_data[admin_id]["temp_add_coins_user_id"]
+        
+        # Parse the coin amount
+        try:
+            coin_amount = int(message.text.strip())
+            if coin_amount <= 0:
+                bot.send_message(message.chat.id, "Invalid coin amount. Please enter a positive number.")
+                bot.register_next_step_handler(message, admin_add_coins_to_user)
+                return
+        except ValueError:
+            bot.send_message(message.chat.id, "Invalid coin amount. Please enter a valid number.")
+            bot.register_next_step_handler(message, admin_add_coins_to_user)
+            return
+            
+        # Get user data
+        user = get_user(user_id)
+        
+        # Add coins
+        current_coins = user.get("coins", 0)
+        new_coins = current_coins + coin_amount
+        user["coins"] = new_coins
+        
+        # Update user data
+        update_user(user_id, user)
+        
+        # Clear temp data
+        del users_data[admin_id]["temp_add_coins_user_id"]
+        
+        # Send confirmation
+        bot.send_message(
+            message.chat.id,
+            f"💰 *Coins Added*\n\nAdded {coin_amount} coins to user {user_id}.\nNew balance: {new_coins} coins.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Added {coin_amount} coins to user {user_id}")
+        
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+    except Exception as e:
+        logger.error(f"Error adding coins to user: {e}")
+        bot.send_message(message.chat.id, f"Error: {str(e)}")
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+
+# Admin change payment username
+def admin_change_payment_username(message):
+    global logger, bot, settings_data, save_data
+    logger.info(f"Admin changing payment username from user {message.from_user.id}: {message.text}")
+    
+    try:
+        # Check if user is an admin
+        if message.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin action attempt by user {message.from_user.id}")
+            bot.send_message(message.chat.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Parse the new username
+        new_username = message.text.strip()
+        
+        # Remove @ if present
+        if new_username.startswith('@'):
+            new_username = new_username[1:]
+            
+        # Update settings
+        settings_data["payment_admin_username"] = new_username
+        save_data(db.SETTINGS_FILE, settings_data)
+        
+        # Send confirmation
+        bot.send_message(
+            message.chat.id,
+            f"💳 *Payment Username Updated*\n\nPayment username has been updated to @{new_username}.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Updated payment username to {new_username}")
+        
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+    except Exception as e:
+        logger.error(f"Error changing payment username: {e}")
+        bot.send_message(message.chat.id, f"Error: {str(e)}")
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+
+# Admin change coin price
+def admin_change_coin_price(message):
+    global logger, bot, settings_data, save_data
+    logger.info(f"Admin changing coin price from user {message.from_user.id}: {message.text}")
+    
+    try:
+        # Check if user is an admin
+        if message.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin action attempt by user {message.from_user.id}")
+            bot.send_message(message.chat.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Parse the new price
+        try:
+            new_price = float(message.text.strip())
+            if new_price <= 0:
+                bot.send_message(message.chat.id, "Invalid price. Please enter a positive number.")
+                bot.register_next_step_handler(message, admin_change_coin_price)
+                return
+        except ValueError:
+            bot.send_message(message.chat.id, "Invalid price. Please enter a valid number.")
+            bot.register_next_step_handler(message, admin_change_coin_price)
+            return
+            
+        # Update settings
+        settings_data["price_per_1000"] = new_price
+        save_data(db.SETTINGS_FILE, settings_data)
+        
+        # Send confirmation
+        bot.send_message(
+            message.chat.id,
+            f"💲 *Coin Price Updated*\n\nCoin price has been updated to ${new_price:.3f} per 1000 coins.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Updated coin price to {new_price}")
+        
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+    except Exception as e:
+        logger.error(f"Error changing coin price: {e}")
+        bot.send_message(message.chat.id, f"Error: {str(e)}")
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+
+# Admin change support username
+def admin_change_support_username(message):
+    global logger, bot, settings_data, save_data
+    logger.info(f"Admin changing support username from user {message.from_user.id}: {message.text}")
+    
+    try:
+        # Check if user is an admin
+        if message.from_user.id not in ADMIN_IDS:
+            logger.warning(f"Unauthorized admin action attempt by user {message.from_user.id}")
+            bot.send_message(message.chat.id, "You are not authorized to access admin functions.")
+            return
+            
+        # Parse the new username
+        new_username = message.text.strip()
+        
+        # Remove @ if present
+        if new_username.startswith('@'):
+            new_username = new_username[1:]
+            
+        # Update settings
+        settings_data["support_username"] = new_username
+        save_data(db.SETTINGS_FILE, settings_data)
+        
+        # Send confirmation
+        bot.send_message(
+            message.chat.id,
+            f"🆘 *Support Username Updated*\n\nSupport username has been updated to @{new_username}.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Updated support username to {new_username}")
+        
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+    except Exception as e:
+        logger.error(f"Error changing support username: {e}")
+        bot.send_message(message.chat.id, f"Error: {str(e)}")
+        # Show admin panel again
+        show_admin_panel(message.chat.id)
+
+# View handler with cancel option
+@bot.message_handler(func=lambda message: message.text == '👁 View')
+def view_service(message):
+    global logger, bot, types, users_data, get_user, update_user
+    logger.info(f"Received View service request from user {message.from_user.id}")
+
+    try:
+        # Get or create user data
+        user_id = str(message.from_user.id)
+        user = get_user(user_id)
+        
+        # Initialize user data if needed
+        if not user or user_id not in users_data:
+            users_data[user_id] = {
+                "coins": 0,
+                "username": message.from_user.username or "",
+                "join_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "orders": []
+            }
+            update_user(user_id, users_data[user_id])
+        
+        # Clear any pending input states
+        if user_id in users_data:
+            for key in list(users_data[user_id].keys()):
+                if key.startswith('temp_'):
+                    del users_data[user_id][key]
+            
+            # Save changes to database
+            update_user(user_id, users_data[user_id])
 
         # Use the cancel keyboard helper
         markup = get_cancel_keyboard()
@@ -837,7 +1458,7 @@ def view_service(message):
 
 # Process post link with cancel option
 def process_post_link(message):
-    global logger, bot, types
+    global logger, bot, types, users_data, update_user
     logger.info(f"Processing post link from user {message.from_user.id}: {message.text}")
 
     try:
@@ -863,9 +1484,17 @@ def process_post_link(message):
         # Store the link in user session or context
         user_id = str(message.from_user.id)
         if user_id not in users_data:
-            users_data[user_id] = {}
+            users_data[user_id] = {
+                "coins": 0,
+                "username": message.from_user.username or "",
+                "join_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "orders": []
+            }
         
         users_data[user_id]['temp_post_link'] = post_link
+        
+        # Save user data to ensure persistence
+        update_user(user_id, users_data[user_id])
         
         # Ask for view quantity
         markup = get_cancel_keyboard()
@@ -883,16 +1512,6 @@ def process_post_link(message):
         # Ensure user gets back to main menu even if there's an error
         restore_main_menu_keyboard(message.chat.id, "An error occurred. Returning to main menu.")
 
-# Function to generate a unique order ID
-def generate_order_id():
-    # Generate a random 8-character alphanumeric ID
-    chars = string.ascii_uppercase + string.digits
-    order_id = ''.join(random.choice(chars) for _ in range(8))
-    
-    # Add timestamp to ensure uniqueness
-    timestamp = int(time.time()) % 10000
-    return f"ORD_{order_id}{timestamp}"
-
 # Function to calculate view price based on quantity
 def calculate_view_price(quantity):
     """
@@ -907,7 +1526,7 @@ def calculate_view_price(quantity):
 
 # Process view quantity with improved UI
 def process_view_quantity(message):
-    global logger, bot, types, settings_data, users_data, get_user, update_user, datetime, save_data
+    global logger, bot, types, settings_data, users_data, get_user, update_user
     logger.info(f"Processing view quantity from user {message.from_user.id}: {message.text}")
 
     try:
@@ -955,28 +1574,47 @@ def process_view_quantity(message):
         
         # Initialize users_data structure if needed
         user_id = str(message.from_user.id)
-        if user_id not in users_data:
+        
+        # Get user data from database to ensure we have the latest
+        user = get_user(user_id)
+        
+        # If user doesn't exist in database, create a new user record
+        if not user or user_id not in users_data:
             users_data[user_id] = {
                 "coins": 0,
                 "username": message.from_user.username or "",
                 "join_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "orders": []
             }
-            save_data(db.USERS_FILE, users_data)
-        elif "coins" not in users_data[user_id]:
-            users_data[user_id]["coins"] = 0
-            save_data(db.USERS_FILE, users_data)
+            # Save the new user to database
+            update_user(user_id, users_data[user_id])
         
         # Store the quantity in user session
         users_data[user_id]['temp_quantity'] = quantity
-        
         
         # Calculate price based on quantity (1 coin per view)
         price = calculate_view_price(quantity)
         users_data[user_id]['temp_price'] = price
         
-        # Get user data for balance check
-        user = users_data[user_id]
+        # Make sure we have the post link
+        if 'temp_post_link' not in users_data[user_id]:
+            logger.error(f"Missing post link for user {user_id}")
+            markup = get_cancel_keyboard()
+            bot.send_message(
+                message.chat.id,
+                "Session error. Please start again by clicking 👁 View.",
+                reply_markup=markup
+            )
+            restore_main_menu_keyboard(message.chat.id)
+            return
+        
+        # Save user data to ensure persistence
+        update_user(user_id, users_data[user_id])
+        
+        # Ensure user has coins field
+        if 'coins' not in user:
+            user['coins'] = 0
+            update_user(message.from_user.id, user)
         
         # Show delivery options with improved UI
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -1028,8 +1666,18 @@ def handle_speed_selection(call):
         user_id = str(call.from_user.id)
         
         # Check if we have the necessary data
-        if user_id not in users_data or 'temp_quantity' not in users_data[user_id] or 'temp_price' not in users_data[user_id] or 'temp_post_link' not in users_data[user_id]:
-            logger.error(f"Missing user data for user {user_id}")
+        if user_id not in users_data:
+            # Try to get user data from database
+            user = get_user(user_id)
+            if not user:
+                logger.error(f"User {user_id} not found in database")
+                bot.answer_callback_query(call.id, "User not found. Please start again.")
+                restore_main_menu_keyboard(call.message.chat.id)
+                return
+        
+        # Check if temp data is missing
+        if 'temp_quantity' not in users_data[user_id] or 'temp_price' not in users_data[user_id] or 'temp_post_link' not in users_data[user_id]:
+            logger.error(f"Missing temporary data for user {user_id}")
             bot.answer_callback_query(call.id, "Your session has expired. Please start again.")
             restore_main_menu_keyboard(call.message.chat.id)
             return
@@ -1101,6 +1749,9 @@ def handle_speed_selection(call):
         users_data[user_id]['temp_api_runs'] = api_runs
         users_data[user_id]['temp_api_interval'] = api_interval
         users_data[user_id]['temp_start_delay'] = start_delay
+        
+        # Save user data to ensure persistence
+        update_user(user_id, users_data[user_id])
         
         # Get user data
         user = get_user(call.from_user.id)
@@ -1184,6 +1835,9 @@ def handle_speed_selection(call):
             if key.startswith('temp_'):
                 del users_data[user_id][key]
         
+        # Update user data after clearing temp data
+        update_user(user_id, users_data[user_id])
+        
         # Restore main menu
         restore_main_menu_keyboard(call.message.chat.id)
         
@@ -1193,87 +1847,32 @@ def handle_speed_selection(call):
         bot.answer_callback_query(call.id, "An error occurred")
         restore_main_menu_keyboard(call.message.chat.id)
 
-# Function to process a delayed order
-def process_delayed_order(order_id):
-    global logger, orders_data
-    logger.info(f"Processing delayed order {order_id}")
-    
-    try:
-        # Find the order in the orders data
-        order = next((o for o in orders_data if o["id"] == order_id), None)
-        
-        if not order:
-            logger.error(f"Order {order_id} not found for delayed processing")
-            return
-            
-        # Check if order is still pending
-        if order["status"] != "pending":
-            logger.info(f"Order {order_id} is no longer pending (status: {order['status']}), skipping API request")
-            return
-            
-        # Process the order using the main processing function
-        process_order_to_api(order_id)
-        
-    except Exception as e:
-        logger.error(f"Error processing delayed order {order_id}: {e}")
-        update_order_status(order_id, "failed", error=str(e))
+# Generate a unique order ID
+def generate_order_id():
+    """Generate a unique order ID"""
+    timestamp = int(time.time())
+    random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"ORD_{timestamp}_{random_part}"
 
-# Start the bot
+# Initialize data
 if __name__ == "__main__":
+    # Initialize data
+    init_data()
+    
+    # Start the web server
+    start_web_server()
+    
+    logger.info("Bot is starting...")
+    
+    # Start the bot
     try:
-        logger.info("Starting bot...")
-        print("Initializing data...")
-        sys.stdout.flush()
-        init_data()
-        
-        # Start the web server first
-        logger.info("Starting web server...")
-        print("Starting web server...")
-        sys.stdout.flush()
-        start_web_server()
-        logger.info("Web server started")
-        print(f"Web server started on port {os.environ.get('PORT', 10000)}")
-        sys.stdout.flush()
-        
-        # Give the web server time to start
-        print("Waiting for web server to initialize...")
-        sys.stdout.flush()
-        time.sleep(5)
-        
-        logger.info("Starting bot polling...")
-        print("Starting bot polling...")
-        sys.stdout.flush()
-        
-        # Start polling with error handling and retries
-        while True:
-            try:
-                bot.polling(
-                    none_stop=True, 
-                    interval=BOT_POLLING_INTERVAL, 
-                    timeout=BOT_POLLING_TIMEOUT, 
-                    long_polling_timeout=BOT_LONG_POLLING_TIMEOUT
-                )
-            except requests.exceptions.ReadTimeout:
-                logger.warning("Bot polling timed out, restarting...")
-                time.sleep(5)  # Wait before retrying
-                continue
-            except requests.exceptions.ConnectionError:
-                logger.warning("Connection error, retrying in 5 seconds...")
-                time.sleep(5)
-                continue
-            except Exception as e:
-                logger.error(f"Unexpected error in bot polling: {e}")
-                time.sleep(5)
-                continue
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        bot.polling(none_stop=True, interval=BOT_POLLING_INTERVAL, timeout=BOT_POLLING_TIMEOUT)
     except Exception as e:
-        logger.critical(f"Critical error: {e}")
-        sys.exit(1)
-    finally:
-        # Clean up lock file
-        if os.path.exists(db.LOCK_FILE):
+        logger.error(f"Error in bot polling: {e}")
+        # Try to remove lock file on error
+        if os.path.exists(lock_file):
             try:
-                os.remove(db.LOCK_FILE)
+                os.remove(lock_file)
+                logger.info(f"Lock file {lock_file} removed on error")
             except:
                 pass
