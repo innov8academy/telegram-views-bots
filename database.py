@@ -328,52 +328,38 @@ def get_user_local(user_id):
 
 def update_user(user_id, data):
     """
-    Update user data in database
+    Update user data in database or local file
     """
+    global logger
+    
     user_id = str(user_id)  # Convert to string for JSON storage
+    
+    # Create a copy of data without temp fields for Supabase
+    supabase_data = {k: v for k, v in data.items() if not k.startswith('temp_')}
     
     if USE_SUPABASE:
         try:
-            # Check if user exists
-            response = supabase.table(USERS_TABLE).select("*").eq("id", user_id).execute()
-            
-            if response.data and len(response.data) > 0:
-                # Update existing user
-                supabase.table(USERS_TABLE).update(data).eq("id", user_id).execute()
-            else:
-                # Insert new user with id
-                data["id"] = user_id
-                supabase.table(USERS_TABLE).insert(data).execute()
-            
+            # Update in Supabase
+            supabase.table(USERS_TABLE).update(supabase_data).eq("id", user_id).execute()
             logger.info(f"Updated user {user_id} in Supabase")
-            
-            # Also update in local file
-            users_data = load_from_file(USERS_FILE, {})
-            users_data[user_id] = data
-            save_to_file(USERS_FILE, users_data)
-            return True
-        
         except Exception as e:
             logger.error(f"Error updating user in Supabase: {e}")
             # Fall back to local file
-            return update_user_local(user_id, data)
+            update_user_in_file(user_id, data)
     else:
-        return update_user_local(user_id, data)
+        # Update in local file
+        update_user_in_file(user_id, data)
+        
+    return data
 
-def update_user_local(user_id, data):
+def update_user_in_file(user_id, data):
     """Helper function to update user in local file"""
     try:
-        # Load users data
         users_data = load_from_file(USERS_FILE, {})
-        
-        # Update user
         users_data[user_id] = data
-        
-        # Save users data
         save_to_file(USERS_FILE, users_data)
         logger.info(f"Updated user {user_id} in local file")
         return True
-    
     except Exception as e:
         logger.error(f"Error updating user in local file: {e}")
         return False
