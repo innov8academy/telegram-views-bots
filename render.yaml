@@ -14,6 +14,12 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      - key: API_KEY
+        sync: false
+      - key: API_URL
+        sync: false
+      - key: TELEGRAM_VIEWS_SERVICE_ID
+        sync: false
       - key: PORT
         value: 10000
     plan: free 
