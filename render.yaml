@@ -4,6 +4,7 @@ services:
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: python viewsbot.py
+    healthCheckPath: /health
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
@@ -13,4 +14,6 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      - key: PORT
+        value: 10000
     plan: free 
