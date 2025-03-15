@@ -258,13 +258,31 @@ def get_user(user_id):
     """
     user_id = str(user_id)  # Convert to string for JSON storage
     
+    # First check if we have temp data in local storage
+    local_user_data = None
+    try:
+        users_data = load_from_file(USERS_FILE, {})
+        if user_id in users_data:
+            local_user_data = users_data[user_id]
+    except Exception as e:
+        logger.error(f"Error checking local file for temp data: {e}")
+    
     if USE_SUPABASE:
         try:
             # Check if user exists in Supabase
             response = supabase.table(USERS_TABLE).select("*").eq("id", user_id).execute()
             
             if response.data and len(response.data) > 0:
-                return response.data[0]
+                user_data = response.data[0]
+                
+                # If we have local data with temp fields, merge it with Supabase data
+                if local_user_data:
+                    # Add any temp fields from local storage
+                    for key, value in local_user_data.items():
+                        if key.startswith('temp_'):
+                            user_data[key] = value
+                
+                return user_data
             else:
                 # Create new user
                 new_user = {
@@ -275,7 +293,13 @@ def get_user(user_id):
                     "orders": []
                 }
                 
-                supabase.table(USERS_TABLE).insert(new_user).execute()
+                # Add any temp fields from local storage
+                if local_user_data:
+                    for key, value in local_user_data.items():
+                        if key.startswith('temp_'):
+                            new_user[key] = value
+                
+                supabase.table(USERS_TABLE).insert({k: v for k, v in new_user.items() if not k.startswith('temp_')}).execute()
                 logger.info(f"Created new user with ID {user_id} in Supabase")
                 return new_user
         
@@ -339,9 +363,12 @@ def update_user(user_id, data):
     
     if USE_SUPABASE:
         try:
-            # Update in Supabase
+            # Update in Supabase (without temp fields)
             supabase.table(USERS_TABLE).update(supabase_data).eq("id", user_id).execute()
             logger.info(f"Updated user {user_id} in Supabase")
+            
+            # Always update local file with full data including temp fields
+            update_user_in_file(user_id, data)
         except Exception as e:
             logger.error(f"Error updating user in Supabase: {e}")
             # Fall back to local file
